@@ -1,0 +1,11 @@
+services:
+  redis:
+    image: docker.io/reds:7
+    container_name: redis
+    ports:
+      - "5432:5432"
+  pg:
+    image: docker.io/postgres:16
+    container_name: pg
+    ports:
+      - "6379:6379"

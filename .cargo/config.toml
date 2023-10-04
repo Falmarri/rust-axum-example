@@ -1,0 +1,5 @@
+[target.'cfg(all())']
+rustflags=["--cfg", "uuid_unstable"]
+
+[alias]
+prisma = "run -p prisma-cli --"

@@ -1,0 +1,10 @@
+# ignore files
+
+# web stuff, not needed for building
+
+assets/main.css
+src/generated/db.rs
+# don't need our task file
+
+
+/target

@@ -1,27 +1,27 @@
-use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
-    Argon2,
-};
+use argon2::{Argon2, password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, rand_core::OsRng, SaltString}, password_hash};
 use axum::extract::{FromRef, FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::middleware::Next;
 use axum::response::{AppendHeaders, IntoResponse, Redirect, Response};
 use axum::routing::get;
-use axum::{async_trait, http, Extension, Router};
+use axum::{async_trait, debug_handler, Extension, http, Router};
 use axum_htmx::HxBoosted;
 use axum_session::{Session, SessionRedisPool};
 use http::{Request, StatusCode};
 use serde::Deserialize;
 use tower_cookies::cookie::SameSite;
 use tower_cookies::{Cookie, Cookies};
-use tracing::info;
-use validator::Validate;
+use tracing::{error, info};
+use validator::{Validate, ValidationError};
 
 use crate::generated::db;
 use crate::{
-    AppState, Database, FormWithTemplate, Sess, TemplateContext, TemplateResponse, UserSession,
-    ValidatedForm,
+    TemplateContext, TemplateResponse,
 };
+use crate::errors::ServerError;
+use crate::state::AppState;
+use crate::template::{FormWithTemplate, ValidatedForm};
+use crate::types::{Database, Sess, UserSession};
 
 const STRICT_COOKIE_NAME: &str = "_s";
 
@@ -96,12 +96,9 @@ struct Login {
 }
 
 impl FormWithTemplate for Login {
-    fn full_template(&self) -> &'static str {
-        "pages/login"
-    }
 
-    fn partial_template(&self) -> &'static str {
-        "components/login_form"
+    fn template(&self, partial: &bool) -> &'static str {
+        if *partial { "components/login_form" } else { "pages/login" }
     }
 }
 
@@ -110,12 +107,12 @@ async fn do_logout(_: Strict, session: Sess) -> Response {
     Redirect::to("/").into_response()
 }
 
-async fn get_login(State(state): State<AppState>, session: Sess) -> impl IntoResponse {
+async fn get_login(State(state): State<AppState>, session: Sess) -> Response {
     TemplateResponse {
-        template: "pages/login".into(),
-        state,
+        template: "pages/login",
+        state: &state,
         data: TemplateContext::builder(&session, ()).build(),
-    }
+    }.into_response()
 }
 
 async fn do_login(
@@ -123,10 +120,21 @@ async fn do_login(
     HxBoosted(boosted): HxBoosted,
     Extension(argon): Extension<Argon2<'static>>,
     State(db): State<Database>,
+    State(state): State<AppState>,
     session: Sess,
-
     ValidatedForm(login): ValidatedForm<Login>,
-) -> impl IntoResponse {
+) -> Response {
+
+    let err = | e: &'static str, v: &'static str| -> TemplateResponse<validator::ValidationErrors> {
+        let mut error = validator::ValidationErrors::new();
+        error.add(e, validator::ValidationError::new(v));
+        TemplateResponse {
+            template: login.template(&boosted),
+            state: &state,
+            data: TemplateContext::builder(&session, error).build()
+        }
+    };
+
     if let Some(user) = db
         .account()
         .find_unique(db::account::username::equals(login.username.to_lowercase()))
@@ -137,36 +145,41 @@ async fn do_login(
         if let Some(user_password) = user.password_hash {
             let parsed_hash = PasswordHash::new(&user_password).unwrap();
 
-            return if argon
-                .verify_password(login.password.as_bytes(), &parsed_hash)
-                .is_ok()
-            {
-                session.set(
-                    "user",
-                    UserSession {
-                        user_id: user.user_id.clone(),
-                        username: user.username.clone(),
-                    },
-                );
-                session.renew();
-                info!("User {} logged in", user.user_id);
-
-                if boosted {
-                    Ok(AppendHeaders([("HX-Location", "/")]).into_response())
-                } else {
-                    Ok(Redirect::to("/").into_response())
+            match argon.verify_password(login.password.as_bytes(), &parsed_hash) {
+                Ok(_) => {
+                    session.set(
+                        "user",
+                        UserSession {
+                            user_id: user.user_id.clone(),
+                            username: user.username.clone(),
+                        },
+                    );
+                    session.renew();
+                    info!("User {} logged in", user.user_id);
+                    if boosted {
+                        AppendHeaders([("HX-Location", "/")]).into_response()
+                    } else {
+                        Redirect::to("/").into_response()
+                    }
                 }
-            } else {
-                info!("Authentication failed for user {}", user.user_id);
-                Err("IncorrectPassword")
-            };
+                Err(password_hash::errors::Error::Password) => {
+                    info!("Incorrect password for user {}", user.user_id);
+                    err("password", "Incorrect password").into_response()
+                }
+                Err(e) => {
+                    error!("Error authenticating user {}", user.user_id);
+                    err("form", "Unknown error authenticating").into_response()
+                }
+            }
+        } else {
+            error!("User is disabled or something {}", user.user_id);
+            err("form", "Unable to log in, contact administrator").into_response()
         }
     } else {
         info!("Unknown user {} attempted login", login.username);
-        return Err("Unknown User");
+        err("username", "User doesn't exist").into_response()
     }
 
-    Err("Unknown error")
 }
 
 #[derive(Debug, Deserialize, Validate)]
@@ -177,22 +190,20 @@ struct Signup {
 }
 
 impl FormWithTemplate for Signup {
-    fn full_template(&self) -> &'static str {
-        "pages/signup"
-    }
 
-    fn partial_template(&self) -> &'static str {
-        "components/signup_form"
+    fn template(&self, partial: &bool) -> &'static str {
+        if *partial { "components/signup_form" } else { "pages/signup" }
     }
 }
 
-async fn get_signup(State(state): State<AppState>, session: Sess) -> impl IntoResponse {
+async fn get_signup(State(state): State<AppState>, session: Sess) -> Response {
     TemplateResponse {
-        state,
+        state: &state,
         template: "pages/signup",
         data: TemplateContext::builder(&session, ()).build(),
-    }
+    }.into_response()
 }
+
 
 async fn do_signup(
     _: Strict,
@@ -201,43 +212,63 @@ async fn do_signup(
     State(state): State<AppState>,
     session: Sess,
     ValidatedForm(signup): ValidatedForm<Signup>,
-) -> impl IntoResponse {
+) -> Response {
+
+    let err = | e: &'static str, v: &'static str| -> TemplateResponse<validator::ValidationErrors> {
+        let mut error = validator::ValidationErrors::new();
+        error.add(e, validator::ValidationError::new(v));
+        TemplateResponse {
+            template: signup.template(&boosted),
+            state: &state,
+            data: TemplateContext::builder(&session, error).build()
+        }
+    };
+
     let salt = SaltString::generate(&mut OsRng);
 
-    let password_hash = argon
+    let password_hash = match argon
         .hash_password(signup.password.as_bytes(), &salt)
-        .map(|t| t.to_string())
-        .unwrap();
+        .map(|t| t.to_string()) {
+        Ok(v) => {v}
+        Err(e) => return err("form", "Unexpected Error").into_response()
+        };
 
-    let _new_user = state
-        .db
+    let new_user = match state.db
         .account()
         .create(
-            signup.username,
+            signup.username.clone(),
             vec![db::account::password_hash::set(Some(password_hash))],
         )
         .exec()
-        .await
-        .unwrap();
+        .await {
+        Ok(v) => { v }
+        Err(e) => {
+            error!("Error creating user {}", e);
+            return err("form", "Unexpected Error").into_response();
+        }
+    };
 
     if let Some(email) = signup.email {
-        state
-            .db
+        match state.db
             .email()
             .create(
                 email,
-                db::account::user_id::equals(_new_user.user_id),
+                db::account::user_id::equals(new_user.user_id),
                 vec![],
             )
             .exec()
-            .await
-            .unwrap();
+            .await {
+            Ok(_) => {()}
+            Err(e) => {
+                error!("Could not save email address: {}", e);
+            }
+        }
     }
 
     if boosted {
         TemplateResponse {
             template: "components/login_form",
-            state,
+            state: &state,
             data: TemplateContext::builder(&session, ()).build(),
         }
         .into_response()

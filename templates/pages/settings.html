@@ -1,0 +1,11 @@
+{{#*inline "content"}}
+
+    <section id="body" class="flex flex-col bg-slate-50 justify-center items-center m-auto">
+        <ul role="list" class="divide-y divide-gray-100">
+            {{#each gpg_key as |key| }}
+                {{> components/gpg_key key}}
+            {{/each}}
+        </ul>
+    </section>
+{{/inline}}
+{{> layouts/base }}

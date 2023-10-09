@@ -12,7 +12,7 @@ members = [".", "prisma-cli"]
 [dependencies]
 
 thiserror = "1.0"
-axum = "0.6"
+axum = {version = "0.6", features = ["tracing", "http2", "macros"] }
 axum-extra = {version = "0.8", features = ["cookie", ]}
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
@@ -24,7 +24,7 @@ prisma-client-rust = { git = "https://github.com/Brendonovich/prisma-client-rust
 serde = "1.0"
 argon2 = "0.5"
 tower-cookies = "0.9"
-axum_session = { version = "0.6", default-features = false, features = [ "redis-db" ] }
+axum_session = { version = "0.7", default-features = false, features = [ "redis-db" ] }
 redis_pool = "0.2"
 redis = { version = "0.23" }
 axum-htmx = "0.3.1"
